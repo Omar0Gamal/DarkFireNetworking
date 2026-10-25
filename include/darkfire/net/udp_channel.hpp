@@ -32,10 +32,16 @@
 
 namespace darkfire::net {
 
-    // Helper for sequence number wrap-around comparison
+    // Delivery modes for UDP channels
+    enum class UDPDeliveryMode {
+        Unreliable,
+        UnreliableSequenced,
+        Reliable
+    };
+
+    // Helper for sequence number wrap-around comparison (delegates to RFC 1982 implementation)
     inline bool SequenceGreaterThan(uint32_t s1, uint32_t s2) noexcept {
-        return ((s1 > s2) && (s1 - s2 <= 0x7FFFFFFF)) ||
-               ((s1 < s2) && (s2 - s1 > 0x7FFFFFFF));
+        return sequence_greater_than<uint32_t>(s1, s2);
     }
 
     struct UDPOwnedPacket {
@@ -51,6 +57,11 @@ namespace darkfire::net {
         uint32_t remoteSequence = 0;
         uint32_t ackBitfield = 0;
         bool hasReceivedPackets = false;
+
+        // Sequence filter tracking (RFC 1982)
+        bool sequenceFilterEnabled = false;
+        bool hasReceivedSequenced = false;
+        uint32_t highestSequencedId = 0;
 
         // Pending unacknowledged reliable packets
         struct PendingPacket {
@@ -134,6 +145,7 @@ namespace darkfire::net {
 
         // Send sequenced packet (discards stale packets at receiver)
         void SendSequenced(const asio::ip::udp::endpoint& target, Packet packet) {
+            packet.AddFlag(PacketFlags::Sequenced);
             SendInternal(target, std::move(packet), false);
         }
 
@@ -141,6 +153,58 @@ namespace darkfire::net {
         void SendReliable(const asio::ip::udp::endpoint& target, Packet packet) {
             packet.AddFlag(PacketFlags::Reliable);
             SendInternal(target, std::move(packet), true);
+        }
+
+        // Enable or disable sequence filtering channel-wide for all endpoints
+        void SetUnreliableSequencedMode(bool enabled) noexcept {
+            m_sequenceFilterAll = enabled;
+        }
+
+        void SetSequenceFilterEnabled(bool enabled) noexcept {
+            m_sequenceFilterAll = enabled;
+        }
+
+        [[nodiscard]] bool IsSequenceFilterEnabled() const noexcept {
+            return m_sequenceFilterAll;
+        }
+
+        // Enable or disable sequence filtering for a specific remote endpoint
+        void SetEndpointSequencedMode(const asio::ip::udp::endpoint& ep, bool enabled) {
+            std::lock_guard<std::mutex> lock(m_peerMutex);
+            m_peers[ep].sequenceFilterEnabled = enabled;
+        }
+
+        void SetEndpointSequenceFilter(const asio::ip::udp::endpoint& ep, bool enabled) {
+            SetEndpointSequencedMode(ep, enabled);
+        }
+
+        // Helper to evaluate/filter incoming sequence numbers under RFC 1982 rules
+        bool FilterIncomingSequence(const asio::ip::udp::endpoint& senderEp, uint32_t packetSeq, uint8_t flags = PacketFlags::Sequenced) {
+            std::lock_guard<std::mutex> lock(m_peerMutex);
+            auto& peer = m_peers[senderEp];
+            bool isSequenced = (flags & PacketFlags::Sequenced) || m_sequenceFilterAll || peer.sequenceFilterEnabled;
+            if (!isSequenced) {
+                return true;
+            }
+            if (!peer.hasReceivedSequenced) {
+                peer.hasReceivedSequenced = true;
+                peer.highestSequencedId = packetSeq;
+                return true;
+            }
+            if (sequence_greater_than(packetSeq, peer.highestSequencedId)) {
+                peer.highestSequencedId = packetSeq;
+                return true;
+            }
+            return false;
+        }
+
+        [[nodiscard]] uint32_t GetHighestReceivedSequence(const asio::ip::udp::endpoint& ep) const {
+            std::lock_guard<std::mutex> lock(m_peerMutex);
+            auto it = m_peers.find(ep);
+            if (it != m_peers.end()) {
+                return it->second.highestSequencedId;
+            }
+            return 0;
         }
 
     private:
@@ -307,6 +371,17 @@ namespace darkfire::net {
             }
 
             // 2. Sequencing & Ack update
+            bool isSequenced = (header.flags & PacketFlags::Sequenced) || m_sequenceFilterAll || peer.sequenceFilterEnabled;
+            if (isSequenced && !(header.flags & PacketFlags::Reliable)) {
+                if (peer.hasReceivedSequenced) {
+                    if (!sequence_greater_than(packetSeq, peer.highestSequencedId)) {
+                        return; // Dropped stale or duplicate sequenced packet
+                    }
+                }
+                peer.hasReceivedSequenced = true;
+                peer.highestSequencedId = packetSeq;
+            }
+
             if (!peer.hasReceivedPackets) {
                 peer.hasReceivedPackets = true;
                 peer.remoteSequence = packetSeq;
@@ -322,11 +397,11 @@ namespace darkfire::net {
             } else {
                 // Out-of-order or duplicate packet
                 uint32_t diff = peer.remoteSequence - packetSeq;
-                if (diff <= 32) {
+                if (diff > 0 && diff <= 32) {
                     peer.ackBitfield |= (1u << (diff - 1));
                 }
-                // If it's not marked reliable and older than current sequence, discard
-                if (!(header.flags & PacketFlags::Reliable)) {
+                // If it's not marked reliable and sequenced filtering is active, discard
+                if (!(header.flags & PacketFlags::Reliable) && isSequenced) {
                     return; // Dropped out-of-order unreliable packet
                 }
             }
@@ -421,6 +496,7 @@ namespace darkfire::net {
         asio::ip::udp::socket m_socket;
         asio::steady_timer m_maintenanceTimer;
         std::atomic<bool> m_running{ false };
+        std::atomic<bool> m_sequenceFilterAll{ false };
 
         mutable std::mutex m_peerMutex;
         // Hash for udp::endpoint

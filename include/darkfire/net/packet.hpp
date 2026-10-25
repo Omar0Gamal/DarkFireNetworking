@@ -31,6 +31,39 @@ namespace darkfire::net {
         constexpr uint8_t Reliable           = 0x10;
         constexpr uint8_t Fragmented         = 0x20;
         constexpr uint8_t SystemMessage      = 0x40;
+        constexpr uint8_t Sequenced          = 0x80;
+        constexpr uint8_t UnreliableSequenced = 0x80;
+    }
+
+    // Modern naming aliases
+    using byte_writer = ByteWriter;
+    using byte_reader = ByteReader;
+
+    // RFC 1982 Serial Number Arithmetic for wrap-around safe sequence comparisons
+    template <typename UInt>
+        requires (std::is_unsigned_v<UInt> && (sizeof(UInt) == 2 || sizeof(UInt) == 4))
+    [[nodiscard]] constexpr bool sequence_greater_than(UInt s1, UInt s2) noexcept {
+        constexpr UInt half_range = static_cast<UInt>(UInt(1) << (sizeof(UInt) * 8 - 1));
+        return ((s1 > s2) && (static_cast<UInt>(s1 - s2) < half_range)) ||
+               ((s1 < s2) && (static_cast<UInt>(s2 - s1) > half_range));
+    }
+
+    template <typename UInt>
+        requires (std::is_unsigned_v<UInt> && (sizeof(UInt) == 2 || sizeof(UInt) == 4))
+    [[nodiscard]] constexpr bool sequence_less_than(UInt s1, UInt s2) noexcept {
+        return (s1 != s2) && !sequence_greater_than(s1, s2);
+    }
+
+    template <typename UInt>
+        requires (std::is_unsigned_v<UInt> && (sizeof(UInt) == 2 || sizeof(UInt) == 4))
+    [[nodiscard]] constexpr bool sequence_greater_or_equal(UInt s1, UInt s2) noexcept {
+        return (s1 == s2) || sequence_greater_than(s1, s2);
+    }
+
+    template <typename UInt>
+        requires (std::is_unsigned_v<UInt> && (sizeof(UInt) == 2 || sizeof(UInt) == 4))
+    [[nodiscard]] constexpr bool sequence_less_or_equal(UInt s1, UInt s2) noexcept {
+        return (s1 == s2) || sequence_less_than(s1, s2);
     }
 
 #pragma pack(push, 1)
