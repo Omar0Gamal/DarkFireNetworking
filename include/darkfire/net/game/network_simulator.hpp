@@ -23,17 +23,17 @@ namespace darkfire::net::game {
         void SetLatency(uint32_t minLatencyMs, uint32_t maxLatencyMs) {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_minLatencyMs = minLatencyMs;
-            m_maxLatencyMs = std::max(minLatencyMs, maxLatencyMs);
+            m_maxLatencyMs = (std::max)(minLatencyMs, maxLatencyMs);
         }
 
         void SetPacketLoss(double dropRate) {
             std::lock_guard<std::mutex> lock(m_mutex);
-            m_dropRate = std::clamp(dropRate, 0.0, 1.0);
+            m_dropRate = (std::clamp)(dropRate, 0.0, 1.0);
         }
 
         void SetDuplicateRate(double duplicateRate) {
             std::lock_guard<std::mutex> lock(m_mutex);
-            m_duplicateRate = std::clamp(duplicateRate, 0.0, 1.0);
+            m_duplicateRate = (std::clamp)(duplicateRate, 0.0, 1.0);
         }
 
         // Returns true if packet was accepted into simulator, false if dropped by packet loss

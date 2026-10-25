@@ -12,19 +12,18 @@ void TestSPSCSingleThread() {
     assert(queue.Empty());
     assert(queue.Size() == 0);
 
-    // Push 3 items (capacity 4 holds up to 3 or 4)
+    // Push 4 items (capacity 4)
     assert(queue.Push(10));
     assert(queue.Push(20));
     assert(queue.Push(30));
+    assert(queue.Push(40));
+    assert(!queue.Push(50)); // Full
 
-    [[maybe_unused]] bool p4 = queue.Push(40);
-    (void)p4;
-
-    [[maybe_unused]] int val = 0;
-    (void)val;
+    int val = 0;
     assert(queue.Pop(val) && val == 10);
     assert(queue.Pop(val) && val == 20);
     assert(queue.Pop(val) && val == 30);
+    assert(queue.Pop(val) && val == 40);
     assert(!queue.Pop(val)); // Empty now
 
     std::cout << "PASSED\n";

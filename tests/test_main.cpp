@@ -1,4 +1,7 @@
 #include <iostream>
+#ifdef _MSC_VER
+#include <crtdbg.h>
+#endif
 
 void RunSerializationTests();
 void RunLockFreeQueueTests();
@@ -7,6 +10,10 @@ void RunGamePrimitivesTests();
 void RunNetworkTransportTests();
 
 int main() {
+#ifdef _MSC_VER
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
     std::cout << "========================================================\n";
     std::cout << "  DarkFireNetworking 2.0 Comprehensive Test Suite\n";
     std::cout << "========================================================\n";

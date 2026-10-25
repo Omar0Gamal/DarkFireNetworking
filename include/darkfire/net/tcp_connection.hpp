@@ -407,7 +407,7 @@ namespace darkfire::net {
 
                 // Sleep until new packet arrives or session cancelled
                 std::error_code tEc;
-                m_writeTimer.expires_at(std::chrono::steady_clock::time_point::max());
+                m_writeTimer.expires_at((std::chrono::steady_clock::time_point::max)());
                 auto [waitEc] = co_await m_writeTimer.async_wait(asio::as_tuple(asio::use_awaitable));
                 
                 if (m_state.load() != SessionState::Active && m_state.load() != SessionState::Authenticating) {

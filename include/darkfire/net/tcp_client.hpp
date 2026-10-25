@@ -35,8 +35,11 @@ namespace darkfire::net {
                 );
 
                 m_connection->SetMessageCallback([this](std::shared_ptr<TCPConnection> conn, Packet& pkt) {
-                    m_qIncoming.Push({ conn, pkt });
-                    OnMessage(pkt);
+                    if (m_asyncDispatch.load()) {
+                        OnMessage(pkt);
+                    } else {
+                        m_qIncoming.Push({ conn, pkt });
+                    }
                 });
 
                 m_connection->SetDisconnectCallback([this](std::shared_ptr<TCPConnection>) {
@@ -64,8 +67,8 @@ namespace darkfire::net {
                     m_ioContext.run();
                 });
 
-                // Wait up to 5 seconds for initial socket connection
-                if (connectFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready) {
+                // Wait up to 1.5 seconds for initial socket connection
+                if (connectFuture.wait_for(std::chrono::milliseconds(1500)) == std::future_status::ready) {
                     return connectFuture.get();
                 }
 
@@ -116,6 +119,10 @@ namespace darkfire::net {
                 count++;
             }
         }
+        
+        void SetAsyncDispatch(bool enable = true) noexcept {
+            m_asyncDispatch = enable;
+        }
 
     protected:
         virtual void OnConnected() {}
@@ -125,6 +132,7 @@ namespace darkfire::net {
     protected:
         asio::io_context m_ioContext;
         std::thread m_workerThread;
+        std::atomic<bool> m_asyncDispatch{ false };
         std::shared_ptr<TCPConnection> m_connection;
         ThreadSafeQueue<OwnedPacket> m_qIncoming;
         std::string m_authKey;

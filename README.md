@@ -203,14 +203,14 @@ DarkFireNetworking is structured as a modern CMake interface library:
 
 ```cmake
 # Option A: Submodule / subfolder
-add_subdirectory(CPP-Networking-Framework)
+add_subdirectory(DarkFireNetworking)
 target_link_libraries(MyGameEngine PRIVATE darkfire_net)
 
 # Option B: FetchContent
 include(FetchContent)
 FetchContent_Declare(
     darkfire_net
-    GIT_REPOSITORY https://github.com/DarkFire-Enterprise/CPP-Networking-Framework.git
+    GIT_REPOSITORY https://github.com/Omar0Gamal/DarkFireNetworking.git
     GIT_TAG        main
 )
 FetchContent_MakeAvailable(darkfire_net)

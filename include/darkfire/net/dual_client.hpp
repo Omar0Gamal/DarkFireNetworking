@@ -63,6 +63,19 @@ namespace darkfire::net {
             this->Disconnect();
         }
 
+        void RegisterUDP(uint32_t clientId) {
+            if (this->m_connection) {
+                this->m_connection->SetId(clientId);
+            }
+            if (m_udpChannel && m_serverUdpEndpoint.port() != 0) {
+                Packet regPacket(0, PacketFlags::SystemMessage);
+                regPacket << clientId;
+                for (int i = 0; i < 3; ++i) {
+                    m_udpChannel->SendTo(m_serverUdpEndpoint, regPacket);
+                }
+            }
+        }
+
         void SendTCP(const Packet& packet) {
             this->Send(packet);
         }

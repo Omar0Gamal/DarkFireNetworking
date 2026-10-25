@@ -180,7 +180,10 @@ namespace darkfire::net {
         // Streaming operator>>
         template <SerializableScalar T>
         friend ByteReader& operator>>(ByteReader& reader, T& value) {
-            if (reader.HasError()) return reader;
+            if (reader.HasError()) {
+                value = T{};
+                return reader;
+            }
             auto res = reader.Read<T>();
             if (res) {
                 value = *res;
@@ -192,7 +195,10 @@ namespace darkfire::net {
 
         template <SerializableEnum E>
         friend ByteReader& operator>>(ByteReader& reader, E& value) {
-            if (reader.HasError()) return reader;
+            if (reader.HasError()) {
+                value = static_cast<E>(0);
+                return reader;
+            }
             auto res = reader.ReadEnum<E>();
             if (res) {
                 value = *res;
@@ -203,7 +209,10 @@ namespace darkfire::net {
         }
 
         friend ByteReader& operator>>(ByteReader& reader, std::string& value) {
-            if (reader.HasError()) return reader;
+            if (reader.HasError()) {
+                value.clear();
+                return reader;
+            }
             auto res = reader.ReadString();
             if (res) {
                 value = std::move(*res);
@@ -214,7 +223,10 @@ namespace darkfire::net {
         }
 
         friend ByteReader& operator>>(ByteReader& reader, bool& value) {
-            if (reader.HasError()) return reader;
+            if (reader.HasError()) {
+                value = false;
+                return reader;
+            }
             auto res = reader.ReadBool();
             if (res) {
                 value = *res;
@@ -226,7 +238,10 @@ namespace darkfire::net {
 
         template <typename T>
         friend ByteReader& operator>>(ByteReader& reader, std::vector<T>& vec) {
-            if (reader.HasError()) return reader;
+            if (reader.HasError()) {
+                vec.clear();
+                return reader;
+            }
             auto res = reader.ReadVector<T>();
             if (res) {
                 vec = std::move(*res);
@@ -238,7 +253,10 @@ namespace darkfire::net {
 
         template <TriviallySerializable T>
         friend ByteReader& operator>>(ByteReader& reader, T& value) {
-            if (reader.HasError()) return reader;
+            if (reader.HasError()) {
+                value = T{};
+                return reader;
+            }
             auto res = reader.ReadStruct<T>();
             if (res) {
                 value = *res;
