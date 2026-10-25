@@ -75,12 +75,12 @@ flowchart TD
 | **Supported Types** | POD primitives only | Scalars, concept-constrained Enums, strings, vectors, trivially copyable structs |
 | **Zero-Copy Support** | None (`std::vector` reallocations per push) | `std::span<const uint8_t>` and `BufferView` zero-copy slices |
 | **Async Model** | Nested lambdas with raw pointer captures | **C++20 coroutines (`asio::awaitable<void>`, `co_await`)** |
-| **Transport** | TCP only (subject to Head-of-Line blocking) | **Dual-Transport (TCP + Fast Sequenced UDP + Reliable UDP)** |
+| **Transport** | TCP only (subject to Head-of-Line blocking) | **Dual-Transport (TCP + Fast Sequenced UDP + Reliable UDP with RFC 1982 wrap-around filtering)** |
 | **UDP Fragmentation** | Not available | **MTU fragmentation and reassembly** (payloads up to 64 KB sliced into $\le 1200$ B chunks) |
 | **UDP Reliability** | Not available | **Sliding 32-bit ACK history bitfield** with selective retransmission |
 | **Authentication** | Basic arithmetic integer scramble | **HMAC-SHA256 challenge-response**, CRC32 integrity checks, magic byte framing |
 | **Queues** | Mutex + CV `net_tsqueue` contention | **Cache-line aligned SPSC ring buffer**, **lock-free MPSC node queue** |
-| **Game Utilities** | None | **EWMA RTT & jitter tracking**, **circular snapshot interpolation**, **network simulator** |
+| **Game Utilities** | None | **NTP clock sync with outlier rejection**, **client prediction input ring buffer**, **redundant wire bundle gap recovery**, **Hermite spline snapshot interpolation**, **reconciliation ack ticks**, **network simulator** |
 | **Diagnostics** | Direct `std::cout` prints | **Pluggable leveled logger (`Trace`, `Debug`, `Info`, `Warning`, `Error`)** |
 | **Build System** | Visual Studio `.vcxproj` only | Target-based **CMake 3.20+** and **Premake5** |
 
@@ -310,33 +310,133 @@ while (gameRunning) {
 }
 ```
 
-### 3. Entity Snapshot Interpolation (`SnapshotHistory`)
+### 3. Client-Side Prediction & Redundant Input Recovery
 
-Smooth remote player transforms across variable packet arrival times:
+Maintain historical player inputs and predicted physics states for client-side prediction, server reconciliation, and seamless packet-loss recovery without retransmissions:
 
 ```cpp
-darkfire::net::game::SnapshotHistory<Transform, 64> history;
+#include <darkfire/darkfire.hpp>
 
-// On UDP snapshot packet arrival:
-history.AddSnapshot(packetTimestampMicros, incomingTransform);
+struct MoveInput {
+    float moveX = 0.0f;
+    float moveY = 0.0f;
+    uint16_t buttons = 0;
+};
 
-// On render frame:
-uint64_t renderTime = darkfire::net::game::RTTTracker::GetCurrentTimeMicros() - 100'000; // 100ms interp delay
+struct PlayerPhysicsState {
+    float posX = 0.0f;
+    float posY = 0.0f;
+};
 
-auto smoothed = history.Sample(renderTime, [](const Transform& a, const Transform& b, double t) {
-    return Transform{
-        a.x + (b.x - a.x) * static_cast<float>(t),
-        a.y + (b.y - a.y) * static_cast<float>(t),
-        a.z + (b.z - a.z) * static_cast<float>(t)
-    };
-});
+// 1. Client prediction buffer (Capacity: 128 ticks)
+darkfire::net::game::input_ring_buffer<MoveInput, PlayerPhysicsState, 128> inputHistory;
 
-if (smoothed) {
-    entity.SetPosition(smoothed->x, smoothed->y, smoothed->z);
+// On each client simulation tick (e.g. tick 100):
+inputHistory.push(currentTick, currentInput, predictedState);
+
+// Pack redundant inputs (latest tick + 3 previous inputs) for wire transport:
+auto bundle = inputHistory.build_bundle<4>(currentTick);
+
+darkfire::net::ByteWriter writer;
+writer << bundle; // Serializes tick 100 and inputs for ticks 97..100
+client.SendUDPSequenced(packet);
+
+// On server: recover dropped UDP packet gaps in tick order
+darkfire::net::game::redundant_input_bundle<MoveInput, 4> incomingBundle;
+reader >> incomingBundle;
+
+for (uint32_t t = incomingBundle.oldest_tick(); t <= incomingBundle.latest_tick; ++t) {
+    if (t > serverLastProcessedTick) {
+        MoveInput in = *incomingBundle.get_input_for_tick(t);
+        SimulatePlayer(in); // Seamlessly recovers dropped inputs without lag!
+        serverLastProcessedTick = t;
+    }
 }
 ```
 
-### 4. Network Condition Simulator
+### 4. NTP-Style Clock Synchronization & Outlier Rejection
+
+Synchronize client simulation time to server time using the 4-timestamp NTP formula with rolling-window outlier rejection (filtering out bufferbloat / queueing spikes):
+
+```cpp
+#include <darkfire/darkfire.hpp>
+
+darkfire::net::game::clock_sync clockSync; // Alias for RTTTracker
+
+// Ping/Pong exchange:
+// Client sends ping with t0
+// Server receives at t1, sends pong at t2
+// Client receives at t3:
+clockSync.add_sample(t0, t1, t2, t3);
+
+// Smoothed clock offset in microseconds (positive if server is ahead)
+int64_t offsetUs = clockSync.clock_offset_us();
+
+// Accurate estimated server time for rendering / snapshot interpolation:
+uint64_t currentServerTimeUs = clockSync.estimated_server_time_us(localTimeUs);
+
+// Simulation pacing multiplier clamped to [0.95, 1.05]:
+// Engine smoothly dilates dt to prevent clock snapping!
+float pacingScale = clockSync.time_drift_scale();
+float adjustedDt = baseDt * pacingScale;
+```
+
+### 5. Entity Snapshot Interpolation & Hermite Splines (`SnapshotHistory`)
+
+Smooth remote player transforms and trajectories across variable packet arrival times using linear or cubic Hermite spline interpolation:
+
+```cpp
+#include <darkfire/darkfire.hpp>
+
+struct EntityTransform {
+    Vector3 pos;
+    Vector3 vel;
+};
+
+darkfire::net::game::snapshot_history<EntityTransform, 64> history(0.001f); // 1ms scale
+
+// On server snapshot arrival (piggybacking last acknowledged client input tick for reconciliation):
+history.add_snapshot(packetTimestampMicros, incomingTransform, lastAckedInputTick);
+
+// Reconciliation rollback check on client:
+uint32_t confirmedInputTick = history.last_acknowledged_input_tick();
+inputHistory.acknowledge_up_to(confirmedInputTick);
+
+// On render frame: Hermite spline interpolation using position & velocity tangents
+uint64_t renderTime = clockSync.GetSyncedServerTimeMicros() - 100'000; // 100ms interp delay
+EntityTransform outState{};
+
+bool sampled = history.sample(renderTime, outState, [](const EntityTransform& a, const EntityTransform& b, float t, float dt_sec) {
+    EntityTransform interpolated;
+    // Cubic Hermite spline curve P(t) = h00*p0 + h10*v0*dt + h01*p1 + h11*v1*dt
+    interpolated.pos = darkfire::net::game::hermite_interpolate(a.pos, a.vel, b.pos, b.vel, t, dt_sec);
+    interpolated.vel = Vector3::Lerp(a.vel, b.vel, t);
+    return interpolated;
+});
+
+if (sampled) {
+    renderEntity.SetPosition(outState.pos);
+}
+```
+
+### 6. Unreliable-Sequenced UDP Delivery & RFC 1982 Serial Number Arithmetic
+
+Drop stale out-of-order UDP datagrams automatically across sequence wrap-around boundaries (`0xFFFF -> 0x0000` or `0xFFFFFFFF -> 0x00000000`):
+
+```cpp
+#include <darkfire/darkfire.hpp>
+
+// Safe sequence arithmetic (RFC 1982)
+bool isNewer = darkfire::net::sequence_greater_than<uint32_t>(seqNew, seqOld);
+
+// Enable automatic sequenced filtering per endpoint or channel-wide:
+channel->SetUnreliableSequencedMode(true);
+
+// Out-of-order and duplicate packets are discarded before callback/queue!
+channel->SendSequenced(serverEp, positionPacket);
+```
+
+### 7. Network Condition Simulator
 
 Test multiplayer replication locally under realistic latency, jitter, and packet loss:
 
