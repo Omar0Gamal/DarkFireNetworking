@@ -21,5 +21,6 @@
 
 // Game Networking Primitives
 #include "net/game/rtt_tracker.hpp"
+#include "net/game/input_history.hpp"
 #include "net/game/snapshot_history.hpp"
 #include "net/game/network_simulator.hpp"
